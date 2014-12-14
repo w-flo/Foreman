@@ -1,3 +1,5 @@
+*.userprefs
+
 # use glob syntax
 syntax: glob
 
