@@ -8,6 +8,8 @@ using System.Text;
 using System.Windows.Forms;
 using System.IO;
 
+using ICSharpCode.SharpZipLib.Zip;
+
 namespace Foreman
 {	
 	public partial class MainForm : Form
@@ -21,15 +23,32 @@ namespace Foreman
 
 		private void Form1_Load(object sender, EventArgs e)
 		{
-			String path = DataCache.FactorioDataPath;
-			if (!Directory.Exists(path))
+			string[] factorioPaths = new string[]
+			{
+				Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Factorio"),
+				Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Factorio"),
+				Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Factorio"),
+				Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "factorio"),
+			};
+
+			String factorioPath = null;
+			foreach(string testPath in factorioPaths)
+			{
+				if(File.Exists(Path.Combine(testPath, "data", "core", "lualib", "dataloader.lua")))
+				{
+					Console.Out.WriteLine("Found factorio: "+testPath);
+					factorioPath = testPath;
+					break;
+				}
+			}
+
+			if (factorioPath == null)
 			{
 				using (DirectoryChooserForm form = new DirectoryChooserForm())
 				{
 					if (form.ShowDialog() == DialogResult.OK)
 					{
-						path = form.SelectedPath;
-						path = Path.Combine(path, "data");
+						factorioPath = form.SelectedPath;
 					}
 					else
 					{
@@ -40,17 +59,40 @@ namespace Foreman
 				}
 			}
 
-			DataCache.FactorioDataPath = path;
-			DataCache.LoadRecipes();
-			if (DataCache.failedFiles.Any())
+			List<string> mods = new List<string>();
+			string[] modPaths = new string[]
 			{
-				String errorMessage = "The following files could not be loaded due to errors:\n";
-				foreach (String file in DataCache.failedFiles.Keys)
+				Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Factorio", "mods"),
+				Path.Combine(factorioPath, "mods"),
+			};
+			foreach(string modPath in modPaths)
+			{
+				if(Directory.Exists(modPath))
 				{
-					errorMessage += String.Format(file + "({0})\n", DataCache.failedFiles[file].Message);
+					foreach(string mod in Directory.GetFiles(modPath, "*.zip", SearchOption.TopDirectoryOnly))
+					{
+						string modDirectory = UnzipMod(mod);
+						Console.Out.WriteLine("unpacking "+mod+" to temporary location "+modDirectory);
+
+						if(File.Exists(Path.Combine(modDirectory, "data.lua")))
+						{
+							mods.Add(modDirectory);
+							Console.Out.WriteLine("added mod directory "+modDirectory);
+						}
+					}
+
+					foreach(string modDirectory in Directory.GetDirectories(modPath, "*", SearchOption.TopDirectoryOnly))
+					{
+						if(File.Exists(Path.Combine(modDirectory, "data.lua")))
+						{
+							mods.Add(modDirectory);
+							Console.Out.WriteLine("added mod directory "+modDirectory);
+						}
+					}
 				}
-				File.AppendAllText(Path.Combine(Application.StartupPath, "errorlog.txt"), errorMessage + "\n");
 			}
+
+			DataCache.LoadRecipes(factorioPath, mods);
 
 			rateOptionsDropDown.SelectedIndex = 0;
 
@@ -83,6 +125,32 @@ namespace Foreman
 			ItemListBox.Items.AddRange(DataCache.Items.Values.ToArray());
 			ItemListBox.DisplayMember = "FriendlyName";
 			ItemListBox.Sorted = true;
+		}
+
+		private string UnzipMod(string modFile)
+		{
+			string tempPath = Path.Combine(Path.GetTempPath(), "Foreman-Factorio", Path.GetRandomFileName());
+			using(ZipInputStream stream = new ZipInputStream(File.OpenRead(modFile)))
+			{
+				ZipEntry entry;
+				while((entry = stream.GetNextEntry()) != null)
+				{
+					string location = Path.Combine(tempPath, entry.Name);
+					if(Path.GetFileName(location) == "") continue;
+					Directory.CreateDirectory(Path.GetDirectoryName(location));
+
+					using(FileStream writer = File.Create(location))
+					{
+						int size;
+						byte[] data = new byte[2048];
+						do {
+							size = stream.Read(data, 0, data.Length);
+							writer.Write(data, 0, size);
+						} while(size > 0);
+					}
+				}
+			}
+			return Directory.EnumerateDirectories(tempPath).FirstOrDefault();
 		}
 
 		private void ItemListForm_KeyDown(object sender, KeyEventArgs e)

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using NLua;
 using System.IO;
+using System.Reflection;
 using System.Windows.Forms;
 using System.Drawing;
 
@@ -11,9 +12,8 @@ namespace Foreman
 {
 	static class DataCache
 	{
-		//Still hardcoded. Needs to ask the user if it can't be found.
-		public static String FactorioDataPath = Path.Combine(Path.GetPathRoot(Application.StartupPath), "Program Files", "Factorio", "data");
-		public static String AppDataModPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Factorio", "mods");
+		private static string factorioPath;
+		private static List<string> mods;
 
 		public static Dictionary<String, Item> Items = new Dictionary<String, Item>();
 		public static Dictionary<String, Recipe> Recipes = new Dictionary<String, Recipe>();
@@ -27,59 +27,37 @@ namespace Foreman
 		public static Bitmap UnknownIcon;
 		public static Dictionary<String, String> KnownRecipeNames = new Dictionary<string, string>();
 		public static Dictionary<String, Dictionary<String, String>> LocaleFiles = new Dictionary<string, Dictionary<string, string>>();
-		public static Dictionary<String, Exception> failedFiles = new Dictionary<string, Exception>();
 
-		public static void LoadRecipes()
+		public static void LoadRecipes(string factorioPath, List<string> mods)
 		{
+			DataCache.factorioPath = factorioPath;
+			DataCache.mods = mods;
+
 			using (Lua lua = new Lua())
 			{
-				List<String> luaFiles = getAllLuaFiles().ToList();
-				List<String> luaDirs = getAllModDirs().ToList();
-
-				//Add all these files to the Lua path variable
-				foreach (String dir in luaDirs)
-				{
-					lua.DoString(String.Format("package.path = package.path .. ';{0}\\\\?.lua'", dir.Replace("\\", "\\\\"))); //Prototype folder matches package hierarchy so this is enough.
-				}
-
-				lua.DoString(String.Format("package.path = package.path .. ';{0}\\\\?.lua'", Path.Combine(luaDirs[0], "lualib").Replace("\\", "\\\\"))); //Add lualib dir
-
-				String dataloaderFile = luaFiles.Find(f => f.EndsWith("dataloader.lua"));
-				String autoplaceFile = luaFiles.Find(f => f.EndsWith("autoplace_utils.lua"));
-
-				List<String> itemFiles = luaFiles.Where(f => f.Contains("prototypes" + Path.DirectorySeparatorChar + "item")).ToList();
-				itemFiles.AddRange(luaFiles.Where(f => f.Contains("prototypes" + Path.DirectorySeparatorChar + "fluid")).ToList());
-				itemFiles.AddRange(luaFiles.Where(f => f.Contains("prototypes" + Path.DirectorySeparatorChar + "equipment")).ToList());
-				List<String> recipeFiles = luaFiles.Where(f => f.Contains("prototypes" + Path.DirectorySeparatorChar + "recipe")).ToList();
-				List<String> entityFiles = luaFiles.Where(f => f.Contains("prototypes" + Path.DirectorySeparatorChar + "entity")).ToList();
-				
 				try
 				{
-					lua.DoFile(dataloaderFile);
-				}
-				catch (Exception e)
-				{
-					failedFiles[dataloaderFile] = e;
-					return; //There's no way to load anything else without this file.
-				}
-				try
-				{
-					lua.DoFile(autoplaceFile);
-				}
-				catch (Exception e)
-				{
-					failedFiles[autoplaceFile] = e;
-				}
-				foreach (String f in itemFiles.Union(recipeFiles).Union(entityFiles))
-				{
-					try
+					AddLuaPackagePath(lua, Path.Combine(factorioPath, "data", "core", "lualib"));
+					lua.DoFile(Path.Combine(factorioPath, "data", "core", "lualib", "dataloader.lua"));
+
+					Assembly assembly = Assembly.GetExecutingAssembly();
+					Stream stream = assembly.GetManifestResourceStream("Foreman.lua-compat.lua");
+					StreamReader rd = new StreamReader(stream);
+					lua.DoString(rd.ReadToEnd());
+
+					AddLuaPackagePath(lua, Path.Combine(factorioPath, "data", "base"));
+					lua.DoFile(Path.Combine(factorioPath, "data", "base", "data.lua"));
+
+					foreach(string modDirectory in mods)
 					{
-						lua.DoFile(f);
+						AddLuaPackagePath(lua, Path.Combine(modDirectory));
+						lua.DoFile(Path.Combine(modDirectory, "data.lua"));
 					}
-					catch (NLua.Exceptions.LuaScriptException e)
-					{
-						failedFiles[f] = e;
-					}
+				}
+				catch (NLua.Exceptions.LuaScriptException e)
+				{
+					Console.Out.WriteLine("error: "+e.ToString());
+					MessageBox.Show("Error loading factorio game data: "+e.ToString());
 				}
 
 				foreach (String type in new List<String> { "item", "fluid", "capsule", "module", "ammo", "gun", "armor", "blueprint", "deconstruction-item" })
@@ -160,49 +138,19 @@ namespace Foreman
 			}
 		}
 
-		private static IEnumerable<String> getAllLuaFiles()
+		private static void AddLuaPackagePath(Lua lua, string dir)
 		{
-			if (Directory.Exists(FactorioDataPath))
-			{
-				foreach (String file in Directory.GetFiles(FactorioDataPath, "*.lua", SearchOption.AllDirectories))
-				{
-					yield return file;
-				}
-			}
-			if (Directory.Exists(AppDataModPath))
-			{
-				foreach (String file in Directory.GetFiles(AppDataModPath, "*.lua", SearchOption.AllDirectories))
-				{
-					yield return file;
-				}
-			}
+			string luaCommand = String.Format("package.path = package.path .. ';{0}{1}?.lua'", dir, Path.DirectorySeparatorChar);
+			luaCommand.Replace("\\", "\\\\");
+			lua.DoString(luaCommand);
 		}
 
 		private static IEnumerable<String> getAllModDirs()
 		{
 			List<String> dirs = new List<String>();
-			if (Directory.Exists(AppDataModPath))
-			{
-				foreach (String dir in Directory.GetDirectories(FactorioDataPath, "*", SearchOption.TopDirectoryOnly).ToList())
-				{
-					dirs.Add(dir);
-				}
-			}
-			if (Directory.Exists(FactorioDataPath))
-			{
-				foreach (String dir in Directory.GetDirectories(AppDataModPath, "*", SearchOption.TopDirectoryOnly).ToList())
-				{
-					dirs.Add(dir);
-				}
-			}
-
-			String baseDir = dirs.Find(d => Path.GetFileName(d) == "base");
-			String coreDir = dirs.Find(d => Path.GetFileName(d) == "core");
-			dirs.Remove(baseDir);
-			dirs.Remove(coreDir);
-			dirs.Insert(0, baseDir);
-			dirs.Insert(0, coreDir);
-
+			dirs.Add(Path.Combine(factorioPath, "data", "core"));
+			dirs.Add(Path.Combine(factorioPath, "data", "base"));
+			dirs.AddRange(mods);
 			return dirs;
 		}
 
@@ -259,7 +207,7 @@ namespace Foreman
 						}
 						catch (Exception e)
 						{
-							failedFiles[file] = e;
+							MessageBox.Show("Failed to load locale file "+file+": "+e.ToString());
 						}
 					}
 				}
@@ -455,9 +403,9 @@ namespace Foreman
 			newFurnace.Icon = LoadImage(values["icon"] as String);
 			newFurnace.MaxIngredients = 1;
 			newFurnace.ModuleSlots = Convert.ToInt32(values["module_slots"]);
-			newFurnace.Speed = Convert.ToSingle(values["smelting_speed"]);
+			newFurnace.Speed = Convert.ToSingle(values["crafting_speed"]);
 
-			foreach (String category in (values["smelting_categories"] as LuaTable).Values)
+			foreach (String category in (values["crafting_categories"] as LuaTable).Values)
 			{
 				newFurnace.Categories.Add(category);
 			}
